@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>⚽🔥 Alertas Futebol – Grupo Telegram</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #f5f5f5;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h2 {
+      color: #0d47a1;
+      text-align: center;
+    }
+    .tabs {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 15px;
+    }
+    .tab {
+      padding: 10px 20px;
+      background: #e3f2fd;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .tab.active { background: #1976d2; color: white; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .controls {
+      text-align: center;
+      margin: 15px 0;
+    }
+    button {
+      padding: 10px 20px;
+      margin: 0 8px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    #btn-update { background: #1976d2; color: white; }
+    #btn-clear { background: #f44336; color: white; }
+    .match, .game {
+      background: white;
+      margin: 12px 0;
+      padding: 16px;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    #status { text-align: center; color: #d32f2f; font-weight: bold; }
+    .no-data { text-align: center; color: #666; padding: 20px; }
+  </style>
+</head>
+<body>
+  <h2>⚽🔥 Alertas Futebol – Grupo Telegram</h2>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('chutes')">3+ Chutes (1º Tempo)</button>
+    <button class="tab" onclick="showTab('over25')">Over 2.5 (2º Tempo)</button>
+  </div>
+
+  <div class="controls">
+    <button id="btn-update" onclick="fetchAllLiveGames()">Atualizar Todos</button>
+    <button id="btn-clear" onclick="clearAllResults()">Zerar Resultados</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="chutes-content" class="tab-content active">
+    <h3>⚽ 3+ Chutes no Gol – 1º Tempo</h3>
+    <div id="games"></div>
+  </div>
+
+  <div id="over25-content" class="tab-content">
+    <h3>🔥 Over 2.5 – Qualquer Placar no 2º Tempo</h3>
+    <div id="matches"></div>
+  </div>
+
+  <audio id="alert-sound" preload="auto">
+    <source src="https://assets.mixkit.co/sfx/preview/mixkit-message-pop-alert-2354.mp3" type="audio/mpeg">
+  </audio>
+
+  <script>
+    const API_KEY = "69536bd4a960d60ff963969d386eb81c";
+    const TELEGRAM_BOT_TOKEN = "7998343837:AAEItwB93x-OYId1b82Rd4jbTK8DppOfmLQ";
+    const TELEGRAM_CHAT_ID = "1251481807";
+
+    const options = { method: 'GET', headers: { 'x-apisports-key': API_KEY } };
+    let lastNotifiedChutes = new Set();
+    let lastNotifiedOver25 = new Set();
+
+    function sendTelegramAlert(message) {
+      fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message,
+          parse_mode: "HTML"
+        })
+      }).catch(err => console.error("Erro no Telegram:", err));
+    }
+
+    function showTab(tabName) {
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      
+      if (tabName === 'chutes') {
+        document.querySelector('.tab:nth-child(1)').classList.add('active');
+        document.getElementById('chutes-content').classList.add('active');
+      } else {
+        document.querySelector('.tab:nth-child(2)').classList.add('active');
+        document.getElementById('over25-content').classList.add('active');
+      }
+    }
+
+    async function fetchAllLiveGames() {
+      const statusEl = document.getElementById("status");
+      statusEl.textContent = "Buscando todos os jogos ao vivo...";
+      
+      try {
+        const res = await fetch("https://v3.football.api-sports.io/fixtures?live=all", options);
+        if (!res.ok) throw new Error(`Erro ${res.status}`);
+        const data = await res.json();
+
+        if (!data.response || data.response.length === 0) {
+          document.getElementById("games").innerHTML = "<p class='no-data'>Nenhum jogo ao vivo.</p>";
+          document.getElementById("matches").innerHTML = "<p class='no-data'>Nenhum jogo ao vivo.</p>";
+          return;
+        }
+
+        const chutesGames = [];
+        const over25Matches = [];
+
+        for (const game of data.response) {
+          const fixture = game.fixture;
+          const teams = game.teams;
+          const elapsed = fixture?.elapsed;
+          const status = fixture?.status;
+
+          if (!teams || !fixture || elapsed == null || !status) continue;
+          if (!teams.home || !teams.away) continue;
+
+          const statsUrl = `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixture.id}`;
+          const statsRes = await fetch(statsUrl, options);
+          if (!statsRes.ok) continue;
+
+          const statsData = await statsRes.json();
+          let homeShots = 0, awayShots = 0, totalShots = 0, corners = 0;
+
+          if (statsData.response?.[0]?.statistics) {
+            const homeStats = statsData.response[0].statistics;
+            const awayStats = statsData.response[1]?.statistics || [];
+            const getStat = (stats, type) => {
+              if (!stats) return 0;
+              const item = stats.find(s => s.type === type);
+              return item ? parseInt(item.value) || 0 : 0;
+            };
+            homeShots = getStat(homeStats, "Shots on Goal");
+            awayShots = getStat(awayStats, "Shots on Goal");
+            totalShots = homeShots + awayShots;
+            corners = getStat(homeStats, "Corners") + getStat(awayStats, "Corners");
+          }
+
+          if (elapsed <= 50 && status.short === "1H" && totalShots >= 3) {
+            chutesGames.push({ game, homeShots, awayShots, totalShots });
+            if (!lastNotifiedChutes.has(fixture.id)) {
+              const msg = `⚽ 3+ Chutes\n${teams.home.name} ${homeShots} x ${awayShots} ${teams.away.name}\n${elapsed}' | Total: ${totalShots} chutes no gol`;
+              sendTelegramAlert(msg);
+              document.getElementById("alert-sound").play().catch(e => console.log("Áudio bloqueado"));
+              lastNotifiedChutes.add(fixture.id);
+            }
+          }
+
+          if (elapsed >= 46 && elapsed <= 85 && status.short === "2H") {
+            const hasTrend = (totalShots >= 8) || (corners >= 10);
+            if (hasTrend) {
+              over25Matches.push({ game, homeShots, awayShots, totalShots, corners });
+              if (!lastNotifiedOver25.has(fixture.id)) {
+                const score = `${game.fixture.goals.home}-${game.fixture.goals.away}`;
+                const msg = `🔥 Over 2.5\n${teams.home.name} ${score} ${teams.away.name}\n${elapsed}' | Chutes: ${totalShots} | Escanteios: ${corners}`;
+                sendTelegramAlert(msg);
+                document.getElementById("alert-sound").play().catch(e => console.log("Áudio bloqueado"));
+                lastNotifiedOver25.add(fixture.id);
+              }
+            }
+          }
+
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        const gamesEl = document.getElementById("games");
+        gamesEl.innerHTML = chutesGames.length === 0 
+          ? "<p class='no-data'>Nenhum jogo com 3+ chutes no 1º tempo.</p
